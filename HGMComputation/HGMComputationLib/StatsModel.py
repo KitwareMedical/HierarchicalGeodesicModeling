@@ -1,4 +1,4 @@
-import manifolds
+import HGMComputationLib.manifolds as manifolds
 import statsmodels.api as sm
 from sklearn.preprocessing import PolynomialFeatures
 import numpy as np

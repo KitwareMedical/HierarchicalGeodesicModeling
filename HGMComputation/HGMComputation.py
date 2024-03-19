@@ -31,11 +31,11 @@ import copy
 
 from pathlib import Path
 
-import manifolds
+import HGMComputationLib.manifolds as manifolds
 
-from StatsModel import LinearizedGeodesicPolynomialRegression_Kendall3D,\
-                         MultivariateLinearizedGeodesicPolynomialRegression_Intercept_Kendall3D, \
-                         MultivariateLinearizedGeodesicPolynomialRegression_Slope_Kendall3D \
+from HGMComputationLib.StatsModel import LinearizedGeodesicPolynomialRegression_Kendall3D,\
+    MultivariateLinearizedGeodesicPolynomialRegression_Intercept_Kendall3D, \
+    MultivariateLinearizedGeodesicPolynomialRegression_Slope_Kendall3D \
                          
 def _setSectionResizeMode(header, *args, **kwargs):
     """ To be compatible with Qt4 and Qt5 """
@@ -86,7 +86,6 @@ def registerSampleData():
     # It is always recommended to provide sample data for users to make it easy to try the module,
     # but if no sample data is available then this method (and associated startupCompeted signal connection) can be removed.
 
-    import SampleData
     iconsPath = os.path.join(os.path.dirname(__file__), 'Resources/Icons')
 
     # To ensure that the source code repository remains small (can be downloaded and installed quickly)
@@ -386,7 +385,7 @@ class HGMComputationLogic(ScriptedLoadableModuleLogic):
             for t in range(0, len(curT)): 
 
                 filename = curPaths[t]
-
+                print(filename)
                 reader = vtk.vtkPolyDataReader()
                 reader.SetFileName(filename)
                 reader.Update()

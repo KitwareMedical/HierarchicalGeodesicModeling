@@ -4,6 +4,8 @@ set(MODULE_NAME HGMComputation)
 #-----------------------------------------------------------------------------
 set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}.py
+  ${MODULE_NAME}Lib/manifolds.py
+  ${MODULE_NAME}Lib/StatsModel.py
   )
 
 set(MODULE_PYTHON_RESOURCES
