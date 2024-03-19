@@ -24,6 +24,8 @@ import csv
 import numpy as np
 
 import pickle
+import json
+
 
 import copy
 
@@ -99,10 +101,7 @@ def registerSampleData():
 class HGMComputationParameterNode:
     """
     The parameters needed by module.
-
-    csvFilePath - the path to the csv with input information
     """
-    
 
 #
 # HGMComputationWidget
@@ -144,16 +143,19 @@ class HGMComputationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # in batch mode, without a graphical user interface.
         self.logic = HGMComputationLogic()
 
-        # By default output to the home directory 
-        self.ui.outDirButton.directory = Path.home()
+        # By default input/output to the home directory 
+        homePath = str(Path.home())
+        self.ui.inputDirectoryButton.directory = homePath
+        self.ui.outDirButton.directory = homePath
 
-        # Connections
-
+        self.shapeTableLoaded = False
+        
         # These connections ensure that we update parameter node when scene is closed
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.StartCloseEvent, self.onSceneStartClose)
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.EndCloseEvent, self.onSceneEndClose)
-
+        
         # Buttons
+        #self.ui.inputDirectoryButton.connect('validInputChanged(bool)', self.inputDirectoryChanged)
         self.ui.csvPathLineEdit.connect('validInputChanged(bool)', self.onCSVPathLineEdit)
         self.ui.applyButton.connect('clicked(bool)', self.onApplyButton)
 
@@ -187,8 +189,6 @@ class HGMComputationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """
         Called just before the scene is closed.
         """
-        self.tableWidget_inputShapeParameters.clearContents()
-        self.tableWidget_inputShapeParameters.setRowCount(0)
         # Parameter node will be reset, do not use it anymore
         self.setParameterNode(None)
 
@@ -215,22 +215,9 @@ class HGMComputationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         Observation is needed because when the parameter node is changed then the GUI must be updated immediately.
         """
 
-        if self._parameterNode:
-            self._parameterNode.disconnectGui(self._parameterNodeGuiTag)
-            self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
-        self._parameterNode = inputParameterNode
-        if self._parameterNode:
-            # Note: in the .ui file, a Qt dynamic property called "SlicerParameterName" is set on each
-            # ui element that needs connection.
-            self._parameterNodeGuiTag = self._parameterNode.connectGui(self.ui)
-            self.addObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
-            self._checkCanApply()
-
-    def _checkCanApply(self, caller=None, event=None) -> None:
-        self.ui.applyButton.enabled = True
-        
     def onCSVPathLineEdit(self) -> None:
-        self.readCSVFile(self.ui.csvPathLineEdit.currentPath)
+        self.readCSVFile(self.ui.inputDirectoryButton.directory, self.ui.csvPathLineEdit.currentPath)
+        self.ui.applyButton.enabled = True
 
     def onApplyButton(self) -> None:
         """
@@ -239,10 +226,10 @@ class HGMComputationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         with slicer.util.tryWithErrorDisplay(_("Failed to compute results."), waitCursor=True):
 
             # Compute output
-            self.logic.process(self.subjIDs, self.shapePaths, self.timepts, self.covariates, self.ui.outDirButton.directory)
+            self.logic.process(self.subjIDs, self.shapePaths, self.timepts, self.covariates, self.ui.outDirButton.directory, self.ui.experimentNameLineEdit.text)
 
-          
-    def readCSVFile(self, pathToCSV):
+    def readCSVFile(self, inputDirectory, pathToCSV):
+        
         self.shapePaths = []
         self.timepts = []
         self.covariates = []
@@ -276,6 +263,8 @@ class HGMComputationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
                 curRow = allRows[i]
 
+                # Todo: check to make sure file exists at path
+
                 ### First, handle the data structures 
 
                 # Subject index
@@ -283,20 +272,20 @@ class HGMComputationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
                 # If this is another observation from the same subject
                 if (subjectIndex == curSubjIndex):
-                    curSubjShapes.append(curRow[0])
+                    curSubjShapes.append(os.path.join(inputDirectory, curRow[0]))
                     curSubjTimepts.append(float(curRow[2]))
                     curSubjCovariates.append(int(curRow[3]))
 
-                    curShapePath = curSubjShapes[0]
                     curID = os.path.splitext(os.path.basename(curRow[0]))[0][0:11]
                     if curID not in self.subjIDs:
                         self.subjIDs.append(curID)
                     
                 # Else this is a new subject index, so lets add the previous subject information to the list of shapes
                 else:
+
                     self.shapePaths.append(curSubjShapes)
                     curSubjShapes = []
-                    curSubjShapes.append(curRow[0])
+                    curSubjShapes.append(os.path.join(inputDirectory, curRow[0]))
 
                     self.timepts.append(curSubjTimepts)
                     curSubjTimepts = []
@@ -340,6 +329,9 @@ class HGMComputationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.timepts.append(curSubjTimepts)
         self.covariates.append([curSubjCovariates[-1]])
 
+        print(self.shapePaths)
+
+
     #
 # HGMComputationLogic
 #
@@ -363,7 +355,12 @@ class HGMComputationLogic(ScriptedLoadableModuleLogic):
     def getParameterNode(self):
         return HGMComputationParameterNode(super().getParameterNode())
 
-    def process(self, subjIDs, shapePaths, timepts, covariates, outDir) -> None:
+    def pickleParameter(self, parameter, filename):
+
+        with open(filename, "wb") as fp:
+            pickle.dump(parameter, fp)
+
+    def process(self, subjIDs, shapePaths, timepts, covariates, outDir, experimentName) -> None:
         """
         Run the process
         :param 
@@ -413,6 +410,14 @@ class HGMComputationLogic(ScriptedLoadableModuleLogic):
         # List of lists holding the pts matrix for each subject and each time point
         allPtsList = []
 
+        expDir = os.path.join(outDir, experimentName)
+        if (not os.path.exists(expDir)):
+            os.makedirs(expDir)
+
+        shapeOutDir = os.path.join(expDir, "shapes")
+        if (not os.path.exists(shapeOutDir)):
+            os.makedirs(shapeOutDir)
+
         # Loop over the number of subjects
         for curSubj in range(0, len(shapePaths)):
 
@@ -447,7 +452,7 @@ class HGMComputationLogic(ScriptedLoadableModuleLogic):
                 
                 writer = vtk.vtkPolyDataWriter()
                 writer.SetInputData(polydataT)
-                outFilename = '%s/%s' %(outDir, os.path.basename(curPaths[t]))
+                outFilename = '%s/%s' %(shapeOutDir, os.path.basename(curPaths[t]))
                 writer.SetFileName(outFilename)
                 writer.Write()
             
@@ -488,25 +493,38 @@ class HGMComputationLogic(ScriptedLoadableModuleLogic):
             p0_list.append(p0_i)
             v_list.append(v_i)
 
+        # Make the output directory
+        
+        parameterDir = os.path.join(expDir, "model_parameters")
+
+        if (not os.path.exists(parameterDir)):
+            os.makedirs(parameterDir)
+
         # Save the regression parameters
-        out_p0_list = "%s/p0_list" %(outDir)
-        out_v_list = "%s/v_list" %(outDir)
+        out_p0_list = "%s/%s_p0_list" %(parameterDir, experimentName)
+        out_v_list = "%s/%s_v_list" %(parameterDir, experimentName)
 
-        with open(out_p0_list, "wb") as fp1:
-            pickle.dump(p0_list, fp1)
-
-        with open(out_v_list, "wb") as fp2:
-            pickle.dump(v_list, fp2)
+        self.pickleParameter(p0_list, out_p0_list)
+        self.pickleParameter(v_list, out_v_list)
 
         population_p0, population_v, covariates_intercepts = MultivariateLinearizedGeodesicPolynomialRegression_Intercept_Kendall3D(covariates, p0_list, order=1)
-
 
         tangent_slope_arr, covariates_slopes = MultivariateLinearizedGeodesicPolynomialRegression_Slope_Kendall3D(
          covariates, v_list, population_p0, p0_list, population_v, covariates_intercepts, level2_order=1)
         
+        # Save the group parameters
+        out_population_p0 = "%s/%s_population_p0" %(parameterDir, experimentName)
+        out_population_v = "%s/%s_population_v" %(parameterDir, experimentName)
+        out_tangent_slope_arr = "%s/%s_tangent_slope_arr" %(parameterDir, experimentName)
+        out_covariates_slopes = "%s/%s_covariates_slopes" %(parameterDir, experimentName)        
+
+        self.pickleParameter(population_p0, out_population_p0)
+        self.pickleParameter(population_v, out_population_v)
+        self.pickleParameter(tangent_slope_arr, out_tangent_slope_arr)
+        self.pickleParameter(covariates_slopes, out_covariates_slopes)
 
         # For now, let's save the subject specific trajectories so there is something to visualize 
-        regressionOutDir = '%s/Regression/' % (outDir)
+        regressionOutDir = os.path.join(expDir, "subject_level_regression")
         if (not os.path.exists(regressionOutDir)):
             os.makedirs(regressionOutDir)
 
@@ -519,7 +537,7 @@ class HGMComputationLogic(ScriptedLoadableModuleLogic):
         for i in range(0, len(subjIDs)):
 
             # Output a regression sequence for each subject
-            curRegOutDir = '%s%s' %(regressionOutDir, subjIDs[i])
+            curRegOutDir = os.path.join(regressionOutDir, subjIDs[i])
             
             if (not os.path.exists(curRegOutDir)):
                 os.makedirs(curRegOutDir)
@@ -569,6 +587,19 @@ class HGMComputationLogic(ScriptedLoadableModuleLogic):
                 writer.SetFileName(reg_out_filename)
                 writer.Write()
  
+
+        # Let's summarize the HGM with a json file
+        experiment_dict = {
+            "experiment_name": experimentName,
+            "shape_directory": shapeOutDir,
+            "model_parameter_directory": parameterDir
+        }
+
+        experiment_json_out = '%s/%s.json' %(expDir, experimentName)
+
+        with open(experiment_json_out, "w") as jsonof:
+            json.dump(experiment_dict, jsonof)
+
         # # Let's try showing a chart of the ages
         # num_subjects = len(shapePaths)
         # all_tables = []
