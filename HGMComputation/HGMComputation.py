@@ -51,7 +51,8 @@ class HGMComputation(ScriptedLoadableModule):
         # _() function marks text as translatable to other languages
         self.parent.helpText = _(
             """
-            See more information in <a href="https://www.ncbi.nlm.nih.gov/pmc/articles/PMC10323213/">our IPMI paper</a>.
+            Please see the documentation and example data in the <a href="https://github.com/KitwareMedical/HierarchicalGeodesicModeling">module's github page</a>.
+            For more information about our geodesic modeling methodology, please see <a href="https://www.ncbi.nlm.nih.gov/pmc/articles/PMC10323213/">our IPMI paper</a>.
             """)
         self.parent.acknowledgementText = _(
             """
@@ -61,7 +62,6 @@ class HGMComputation(ScriptedLoadableModule):
 
         # Additional initialization step after application startup is complete
         slicer.app.connect("startupCompleted()", registerSampleData)
-
 
 #
 # Register sample data sets in Sample Data module
@@ -205,7 +205,9 @@ class HGMComputationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.logic.export(self.ui.DirectoryButton_export.directory, self.ui.lineEdit_experimentName.text)
 
     def onLoadExistingModel(self):
-        self.logic.loadExistingModel(self.ui.PathLineEdit_existingModel.currentPath, self.ui.gridLayout_visualizationSliders, self.ui.comboBox_visualizeModel)
+        self.logic.loadExistingModel(self.ui.PathLineEdit_existingModel.currentPath,
+                                     self.ui.gridLayout_visualizationSliders,
+                                     self.ui.comboBox_visualizeModel)
 
 #
 # HGMComputationLogic
@@ -407,7 +409,6 @@ class HGMComputationLogic(ScriptedLoadableModuleLogic):
         table_widget.resizeColumnsToContents()
         return True
 
-    # todo: use ui as input
     def compute(self, selected_covariates_indices, selected_covariates_names, ui):
         """
         Run the process
