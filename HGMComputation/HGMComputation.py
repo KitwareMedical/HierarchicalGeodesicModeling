@@ -1,6 +1,8 @@
 import logging
 import os
+import pathlib
 from typing import Annotated, Optional
+from multiprocessing import Pool
 
 import vtk
 import qt
@@ -11,14 +13,8 @@ from slicer.i18n import tr as _
 from slicer.i18n import translate
 from slicer.ScriptedLoadableModule import *
 from slicer.util import VTKObservationMixin
-from slicer.parameterNodeWrapper import (
-    parameterNodeWrapper,
-    WithinRange,
-)
 
 from packaging import version
-
-from slicer import vtkMRMLScalarVolumeNode
 
 import csv
 import numpy as np
@@ -33,21 +29,14 @@ from pathlib import Path
 
 import HGMComputationLib.manifolds as manifolds
 
-from HGMComputationLib.StatsModel import LinearizedGeodesicPolynomialRegression_Kendall3D,\
-    MultivariateLinearizedGeodesicPolynomialRegression_Intercept_Kendall3D, \
-    MultivariateLinearizedGeodesicPolynomialRegression_Slope_Kendall3D \
-                         
-def _setSectionResizeMode(header, *args, **kwargs):
-    """ To be compatible with Qt4 and Qt5 """
-    if version.parse(qt.Qt.qVersion()) < version.parse("5.0.0"):
-        header.setResizeMode(*args, **kwargs)
-    else:
-        header.setSectionResizeMode(*args, **kwargs)
+from HGMComputationLib.StatsModel import FrechetMean_Kendall3D,\
+    LinearizedGeodesicPolynomialRegression_Kendall3D,\
+    MultivariateLinearizedGeodesicPolynomialRegression_Intercept_Kendall3D,\
+    MultivariateLinearizedGeodesicPolynomialRegression_Slope_Kendall3D
 
 #
 # HGMComputation
 #
-
 class HGMComputation(ScriptedLoadableModule):
     """Uses ScriptedLoadableModule base class, available at:
     https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
@@ -55,21 +44,20 @@ class HGMComputation(ScriptedLoadableModule):
 
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
-        self.parent.title = _("HGMComputation")  # TODO: make this more human readable by adding spaces
-        # TODO: set categories (folders where the module shows up in the module selector)
+        self.parent.title = _("Hierarchical Geodesic Modeling")
         self.parent.categories = [translate("qSlicerAbstractCoreModule", "Shape Analysis")]
-        self.parent.dependencies = []  # TODO: add here list of module names that this module requires
-        self.parent.contributors = ["James Fishbaugh, Ye Han (Kitware Inc.)"]  # TODO: replace with "Firstname Lastname (Organization)"
-        # TODO: update with short description of the module and a link to online module documentation
+        self.parent.dependencies = []
+        self.parent.contributors = ["Ye Han, James Fishbaugh (Kitware)"]
         # _() function marks text as translatable to other languages
-        self.parent.helpText = _("""
-This is an example of scripted loadable module bundled in an extension.
-See more information in <a href="https://github.com/organization/projectname#HGMComputation">module documentation</a>.
-""")
-        # TODO: replace with organization, grant and thanks
-        self.parent.acknowledgementText = _("""
-
-""")
+        self.parent.helpText = _(
+            """
+            See more information in <a href="https://www.ncbi.nlm.nih.gov/pmc/articles/PMC10323213/">our IPMI paper</a>.
+            """)
+        self.parent.acknowledgementText = _(
+            """
+            This work was supported by NIH NIBIB awards R01EB021391(PI. Beatriz Paniagua, 
+            Shape Analysis Toolbox for Medical Image Computing Projects)
+            """)
 
         # Additional initialization step after application startup is complete
         slicer.app.connect("startupCompleted()", registerSampleData)
@@ -78,7 +66,6 @@ See more information in <a href="https://github.com/organization/projectname#HGM
 #
 # Register sample data sets in Sample Data module
 #
-
 def registerSampleData():
     """
     Add data sets to Sample Data module.
@@ -91,21 +78,9 @@ def registerSampleData():
     # To ensure that the source code repository remains small (can be downloaded and installed quickly)
     # it is recommended to store data sets that are larger than a few MB in a Github release.
 
-
-#
-# HGMComputationParameterNode
-#
-
-@parameterNodeWrapper
-class HGMComputationParameterNode:
-    """
-    The parameters needed by module.
-    """
-
 #
 # HGMComputationWidget
 #
-
 class HGMComputationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     """Uses ScriptedLoadableModuleWidget base class, available at:
     https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
@@ -118,8 +93,6 @@ class HGMComputationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         ScriptedLoadableModuleWidget.__init__(self, parent)
         VTKObservationMixin.__init__(self)  # needed for parameter node observation
         self.logic = None
-        self._parameterNode = None
-        self._parameterNodeGuiTag = None
 
     def setup(self) -> None:
         """
@@ -142,199 +115,101 @@ class HGMComputationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # in batch mode, without a graphical user interface.
         self.logic = HGMComputationLogic()
 
-        # By default input/output to the home directory 
-        homePath = str(Path.home())
-        self.ui.inputDirectoryButton.directory = homePath
-        self.ui.outDirButton.directory = homePath
-
-        self.shapeTableLoaded = False
-        
         # These connections ensure that we update parameter node when scene is closed
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.StartCloseEvent, self.onSceneStartClose)
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.EndCloseEvent, self.onSceneEndClose)
-        
-        # Buttons
-        #self.ui.inputDirectoryButton.connect('validInputChanged(bool)', self.inputDirectoryChanged)
-        self.ui.csvPathLineEdit.connect('validInputChanged(bool)', self.onCSVPathLineEdit)
-        self.ui.applyButton.connect('clicked(bool)', self.onApplyButton)
 
-        # Make sure parameter node is initialized (needed for module reload)
-        self.initializeParameterNode()
+        # UI
+        self.ui.groupBox_computation.setDisabled(True)
+        self.ui.spinBox_subjectModelDegree.setRange(1, 2)
+        self.ui.comboBox_filenames.setDisabled(True)
+        self.ui.comboBox_subjectIndex.setDisabled(True)
+        self.ui.comboBox_timeVariables.setDisabled(True)
+        self.ui.comboBox_subjectIdType.addItems(['Prefix', 'Suffix', 'Index'])
+        self.ui.spinBox_idLength.setMinimum(1)
+        self.ui.spinBox_idLength.setValue(11)
+        self.ui.listWidget_covariatesSelection.setSelectionMode(qt.QAbstractItemView.MultiSelection)
+        self.ui.spinBox_populationModelDegree.setRange(1, 1)  # todo: higher order for population level model
+        self.ui.pushButton_compute.setDisabled(True)
+
+        # self.ui.groupBox_visualization.setDisabled(True)
+
+        self.ui.groupBox_export.setDisabled(True)
+
+        # Connections
+        self.ui.pushButton_loadData.connect('clicked()', self.onLoadData)
+        self.ui.pushButton_compute.connect('clicked()', self.onCompute)
+        self.ui.pushButton_export.connect('clicked()', self.onExport)
+        self.ui.pushButton_loadModel.connect('clicked()', self.onLoadExistingModel)
 
     def cleanup(self) -> None:
         """
         Called when the application closes and the module widget is destroyed.
         """
         self.removeObservers()
+        self.ui.tableWidget_inputShapes.clear()
 
     def enter(self) -> None:
         """
         Called each time the user opens this module.
         """
-        # Make sure parameter node exists and observed
-        self.initializeParameterNode()
+
 
     def exit(self) -> None:
         """
         Called each time the user opens a different module.
         """
-        # Do not react to parameter node changes (GUI will be updated when the user enters into the module)
-        if self._parameterNode:
-            self._parameterNode.disconnectGui(self._parameterNodeGuiTag)
-            self._parameterNodeGuiTag = None
-            self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
 
     def onSceneStartClose(self, caller, event) -> None:
         """
         Called just before the scene is closed.
         """
-        # Parameter node will be reset, do not use it anymore
-        self.setParameterNode(None)
 
     def onSceneEndClose(self, caller, event) -> None:
         """
         Called just after the scene is closed.
         """
-        # If this module is shown while the scene is closed then recreate a new parameter node immediately
-        if self.parent.isEntered:
-            self.initializeParameterNode()
 
-    def initializeParameterNode(self) -> None:
-        """
-        Ensure parameter node exists and observed.
-        """
-        # Parameter node stores all user choices in parameter values, node selections, etc.
-        # so that when the scene is saved and reloaded, these settings are restored.
+    def onLoadData(self):
+        input_directory = self.ui.DirectoryButton_inputDirectory.directory
+        demographics_path = self.ui.PathLineEdit_demographics.currentPath
+        if self.logic.readCSVFile(input_directory, demographics_path, self.ui.tableWidget_inputShapes):
+            table_widget = self.ui.tableWidget_inputShapes
+            self.ui.comboBox_filenames.addItem(table_widget.horizontalHeaderItem(0).text())
+            self.ui.comboBox_subjectIndex.addItem(table_widget.horizontalHeaderItem(1).text())
+            self.ui.comboBox_timeVariables.addItem(table_widget.horizontalHeaderItem(2).text())
+            self.ui.groupBox_computation.setEnabled(True)
+            self.ui.listWidget_covariatesSelection.clear()
+            for i in range(3, self.ui.tableWidget_inputShapes.columnCount):
+                self.ui.listWidget_covariatesSelection.addItem(table_widget.horizontalHeaderItem(i).text())
+            self.ui.pushButton_compute.setDisabled(False)
 
-        self.setParameterNode(self.logic.getParameterNode())
-
-    def setParameterNode(self, inputParameterNode: Optional[HGMComputationParameterNode]) -> None:
+    def onCompute(self) -> None:
         """
-        Set and observe parameter node.
-        Observation is needed because when the parameter node is changed then the GUI must be updated immediately.
-        """
-
-    def onCSVPathLineEdit(self) -> None:
-        self.readCSVFile(self.ui.inputDirectoryButton.directory, self.ui.csvPathLineEdit.currentPath)
-        self.ui.applyButton.enabled = True
-
-    def onApplyButton(self) -> None:
-        """
-        Run processing when user clicks "Apply" button.
+        Run processing when user clicks "Compute" button.
         """
         with slicer.util.tryWithErrorDisplay(_("Failed to compute results."), waitCursor=True):
+            # compute output
+            selected_covariates_indices = []
+            selected_covariates_names = []
+            for item in self.ui.listWidget_covariatesSelection.selectedItems():  # todo: double check index ordering
+                selected_covariates_indices.append(self.ui.listWidget_covariatesSelection.row(item))
+                selected_covariates_names.append(item.text())
 
-            # Compute output
-            self.logic.process(self.subjIDs, self.shapePaths, self.timepts, self.covariates, self.ui.outDirButton.directory, self.ui.experimentNameLineEdit.text)
-
-    def readCSVFile(self, inputDirectory, pathToCSV):
-        
-        self.shapePaths = []
-        self.timepts = []
-        self.covariates = []
-        self.subjIDs = []
-
-        with open(pathToCSV) as csvfile:
-            allRows = list(csv.reader(csvfile, delimiter=',', quotechar='|'))
-            headers = allRows[0]
-
-            # Set the table headers
-            self.ui.inputShapesTable.setColumnCount(len(headers))
-            self.ui.inputShapesTable.setHorizontalHeaderLabels(headers)
-
-            horizontalHeader = self.ui.inputShapesTable.horizontalHeader()
-            horizontalHeader.setStretchLastSection(False)
-
-            _setSectionResizeMode(horizontalHeader, 0, qt.QHeaderView.Stretch)
-
-            nrows = len(allRows)
-            self.ui.inputShapesTable.setRowCount(nrows)
-
-            # The number of covariates are the additional headers beyond Input Shape, subject Index, and Time Point
-            numCovariates = len(headers)-3
-            
-            curSubjIndex = 0
-            curSubjShapes = []
-            curSubjTimepts = []
-            curSubjCovariates = []
-            
-            for i in range(1, nrows):
-
-                curRow = allRows[i]
-
-                # Todo: check to make sure file exists at path
-
-                ### First, handle the data structures 
-
-                # Subject index
-                subjectIndex = int(curRow[1])
-
-                # If this is another observation from the same subject
-                if (subjectIndex == curSubjIndex):
-                    curSubjShapes.append(os.path.join(inputDirectory, curRow[0]))
-                    curSubjTimepts.append(float(curRow[2]))
-                    curSubjCovariates.append(int(curRow[3]))
-
-                    curID = os.path.splitext(os.path.basename(curRow[0]))[0][0:11]
-                    if curID not in self.subjIDs:
-                        self.subjIDs.append(curID)
-                    
-                # Else this is a new subject index, so lets add the previous subject information to the list of shapes
-                else:
-
-                    self.shapePaths.append(curSubjShapes)
-                    curSubjShapes = []
-                    curSubjShapes.append(os.path.join(inputDirectory, curRow[0]))
-
-                    self.timepts.append(curSubjTimepts)
-                    curSubjTimepts = []
-                    curSubjTimepts.append(float(curRow[2]))
-
-                    self.covariates.append([curSubjCovariates[-1]])
-                    curSubjCovariates = []
-                    curSubjCovariates.append(int(curRow[3]))
-
-                    curSubjIndex += 1
-
-                ### Next, handle populating the UI table
-                
-                self.ui.inputShapesTable.setRowCount(i)
-
-                # Vtk shape file
-                rootname = os.path.splitext(os.path.basename(curRow[0]))[0]
-                labelVTKFile = qt.QLabel(rootname)
-                self.ui.inputShapesTable.setCellWidget(i-1, 0, labelVTKFile)
-                
-                # Subject index
-                labelSubjectIndex = qt.QLabel(curRow[1])
-                labelSubjectIndex.setAlignment(0x84)
-                self.ui.inputShapesTable.setCellWidget(i-1, 1, labelSubjectIndex)
-
-                # Time point
-                timepoint_2digits = '%0.2f' %(float(curRow[2]))
-                labelTimePoint = qt.QLabel(str(timepoint_2digits))
-                labelTimePoint.setAlignment(0x84)
-                self.ui.inputShapesTable.setCellWidget(i-1, 2, labelTimePoint)
-
-                # The rest are covariates
-                for j in range(3, len(curRow)):
-
-                    # Covariate label
-                    labelCovariate = qt.QLabel(curRow[j])
-                    labelCovariate.setAlignment(0x84)
-                    self.ui.inputShapesTable.setCellWidget(i-1, j, labelCovariate)
-
-        self.shapePaths.append(curSubjShapes)
-        self.timepts.append(curSubjTimepts)
-        self.covariates.append([curSubjCovariates[-1]])
-
-        print(self.shapePaths)
+            if self.logic.compute(selected_covariates_indices, selected_covariates_names, self.ui):
+                self.ui.groupBox_visualization.setEnabled(True)
+                self.ui.groupBox_export.setEnabled(True)
 
 
-    #
+    def onExport(self):
+        self.logic.export(self.ui.DirectoryButton_export.directory, self.ui.lineEdit_experimentName.text)
+
+    def onLoadExistingModel(self):
+        self.logic.loadExistingModel(self.ui.PathLineEdit_existingModel.currentPath, self.ui.gridLayout_visualizationSliders, self.ui.comboBox_visualizeModel)
+
+#
 # HGMComputationLogic
 #
-
 class HGMComputationLogic(ScriptedLoadableModuleLogic):
     """This class should implement all the actual
     computation done by your module.  The interface
@@ -351,281 +226,770 @@ class HGMComputationLogic(ScriptedLoadableModuleLogic):
         """
         ScriptedLoadableModuleLogic.__init__(self)
 
-    def getParameterNode(self):
-        return HGMComputationParameterNode(super().getParameterNode())
+        # input
+        self.shape_paths = []
+        self.subject_indices = []
+        self.filenames = []
+        self.subject_ids = []
+        self.time_points = []
+        self.minimum_time_point = None
+        self.maximum_time_point = None
+        self.covariates = []
+        self.polydatas = []
+
+        # computation
+        self.p0_list = []
+        self.v_list = []
+        self.mean_p0 = None
+        self.mean_v = []
+        self.subject_model_order = None
+        self.population_model_order = None
+        self.population_p0 = None
+        self.population_v = []
+        self.tangent_slope_arr = None
+        self.maximum_covariates = []
+        self.minimum_covariates = []
+
+        # visualization
+        self.visualization_nodes = []
+        self.visualization_grid_layout = None
+        self.visualization_labels = []
+        self.visualization_sliders = []
+        self.visualization_grid_layout = None
+        self.selected_covariates_indices = []
+        self.selected_covariates_names = []
+        self.visualization_index = None
 
     def pickleParameter(self, parameter, filename):
-
         with open(filename, "wb") as fp:
             pickle.dump(parameter, fp)
 
-    def process(self, subjIDs, shapePaths, timepts, covariates, outDir, experimentName) -> None:
+    def pickleLoad(self, filename):
+        with open(filename, 'rb') as fp:
+            return pickle.load(fp)
+
+    def cleanup(self):
+        # input
+        self.shape_paths = []
+        self.subject_indices = []
+        self.filenames = []
+        self.subject_ids = []
+        self.time_points = []
+        self.minimum_time_point = None
+        self.maximum_time_point = None
+        self.covariates = []
+        self.polydatas = []
+
+        # computation
+        self.p0_list = []
+        self.v_list = []
+        self.mean_p0 = None
+        self.mean_v = []
+        self.subject_model_order = None
+        self.population_model_order = None
+        self.population_p0 = None
+        self.population_v = None
+        self.tangent_slope_arr = None
+        self.maximum_covariates = []
+        self.minimum_covariates = []
+
+        # visualization
+        self.visualization_nodes = []
+        self.visualization_grid_layout = None
+        self.visualization_labels = []
+        self.visualization_sliders = []
+        self.visualization_grid_layout = None
+        self.selected_covariates_indices = []
+        self.selected_covariates_names = []
+        self.visualization_index = None
+
+    def readCSVFile(self, input_directory, demographics_path, table_widget):
+        self.cleanup()
+        with open(demographics_path) as csvfile:
+            all_rows = list(csv.reader(csvfile, delimiter=',', quotechar='|'))
+            num_rows = len(all_rows)
+
+            current_subject_index = int(all_rows[1][1])
+            # todo: currently assuming subject index starts at 0
+            self.subject_indices.append(current_subject_index)
+            current_subject_shapes = []
+            current_subject_time_points = []
+            current_subject_covariates = []
+            current_subject_filenames = []
+
+            # The number of covariates are the additional headers beyond Input Shape, subject Index, and Time Point
+            num_covariates = len(all_rows[0]) - 3
+
+            # Read inputs
+            for i in range(1, num_rows):
+                row = all_rows[i]
+                row_file_path = os.path.join(input_directory, row[0])
+                if not os.path.exists(row_file_path):
+                    logging.error("File path does not exist: " + row_file_path)
+                    return False
+
+                row_time_point = float(row[2])
+                if self.minimum_time_point is None or self.maximum_time_point is None:
+                    self.minimum_time_point = row_time_point
+                    self.maximum_time_point = row_time_point
+                else:
+                    if row_time_point < self.minimum_time_point:
+                        self.minimum_time_point = row_time_point
+                    if row_time_point > self.maximum_time_point:
+                        self.maximum_time_point = row_time_point
+
+                row_subject_index = int(row[1])
+                # Another observation from the current subject
+                if row_subject_index == current_subject_index:
+                    current_subject_filenames.append(row[0])
+                    current_subject_shapes.append(row_file_path)
+                    current_subject_time_points.append(row_time_point)
+                    row_covariates = []
+                    for j in range(3, 3 + num_covariates):
+                        row_covariates.append(float(row[j]))
+                    current_subject_covariates.append(row_covariates)
+
+                # New subject
+                else:
+                    self.filenames.append(current_subject_filenames)
+                    self.shape_paths.append(current_subject_shapes)
+                    self.time_points.append(current_subject_time_points)
+                    self.covariates.append(current_subject_covariates)
+
+                    current_subject_filenames = [row[0]]
+                    current_subject_shapes = [row_file_path]
+                    current_subject_time_points = [row_time_point]
+                    row_covariates = []
+                    for j in range(3, 3 + num_covariates):
+                        row_covariates.append(float(row[j]))
+                    current_subject_covariates = [row_covariates]
+                    current_subject_index = row_subject_index
+                    self.subject_indices.append(current_subject_index)
+
+            self.filenames.append(current_subject_filenames)
+            self.shape_paths.append(current_subject_shapes)
+            self.time_points.append(current_subject_time_points)
+            self.covariates.append(current_subject_covariates)
+
+            # Populate UI table
+            headers = all_rows[0]
+            table_widget.setColumnCount(len(headers))
+            table_widget.setHorizontalHeaderLabels(headers)
+            horizontal_header = table_widget.horizontalHeader()
+            horizontal_header.setStretchLastSection(True)
+
+            table_widget.setRowCount(num_rows - 1)
+            for i in range(1, num_rows):
+                row = all_rows[i]
+
+                # Vtk shape file
+                labelVTKFile = qt.QLabel(row[0])
+                table_widget.setCellWidget(i - 1, 0, labelVTKFile)
+
+                # subject index
+                labelSubjectIndex = qt.QLabel(row[1])
+                labelSubjectIndex.setAlignment(qt.Qt.AlignCenter)
+                table_widget.setCellWidget(i - 1, 1, labelSubjectIndex)
+
+                # time point
+                timepoint_2digits = '%0.2f' % (float(row[2]))
+                labelTimePoint = qt.QLabel(str(timepoint_2digits))
+                labelTimePoint.setAlignment(qt.Qt.AlignCenter)
+                table_widget.setCellWidget(i - 1, 2, labelTimePoint)
+
+                # The rest are covariates
+                for j in range(3, len(row)):
+                    # covariate label
+                    labelCovariate = qt.QLabel(row[j])
+                    labelCovariate.setAlignment(qt.Qt.AlignCenter)
+                    table_widget.setCellWidget(i - 1, j, labelCovariate)
+
+        table_widget.resizeColumnsToContents()
+        return True
+
+    # todo: use ui as input
+    def compute(self, selected_covariates_indices, selected_covariates_names, ui):
         """
         Run the process
         :param 
         """
-
-        # Maybe do some error checking here?        
-
         import time
         startTime = time.time()
         logging.info('Processing started')
 
-        # Run the algorithm here
+        subject_model_order = ui.spinBox_subjectModelDegree.value
+        population_model_order = ui.spinBox_populationModelDegree.value
+        grid_layout = ui.gridLayout_visualizationSliders
+        visualize_model = ui.comboBox_visualizeModel
+        subject_id_type = ui.comboBox_subjectIdType
+        id_length = ui.spinBox_idLength.value
+        covariates_time_index = ui.spinBox_covariatesTimeIndex.value
 
+        ### preprocessing using partial procrustes alignment for all subjects
         polydataGroup = vtk.vtkMultiBlockDataGroupFilter()
+        for subject_index in self.subject_indices:
 
-        # Loop over the number of subjects
-        for curSubj in range(0, len(shapePaths)):
+            current_paths = self.shape_paths[subject_index]
+            current_time = self.time_points[subject_index]
 
-            curPaths = shapePaths[curSubj]
-            curT = timepts[curSubj]
-        
-            # Loop over the time points
-            for t in range(0, len(curT)): 
+            for t in range(0, len(current_time)):
 
-                filename = curPaths[t]
-                print(filename)
+                filename = current_paths[t]
                 reader = vtk.vtkPolyDataReader()
                 reader.SetFileName(filename)
                 reader.Update()
                 polydata = reader.GetOutput()
-
                 polydataGroup.AddInputData(polydata)
 
-        #########################################
-        # Procrustes alignment for all subjects #
-        #########################################
         polydataGroup.Update()
         procrustesFilter = vtk.vtkProcrustesAlignmentFilter()
         procrustesFilter.SetInputData(polydataGroup.GetOutput())
         procrustesFilter.GetLandmarkTransform().SetModeToSimilarity()
         procrustesFilter.Update()  
-        
+
         # Per subject reference for triangles so we can connect back up points after model fitting
         referencePolyForTris = []
-        # List of lists holding the polydata for each subject and each time point
-        allPolyList = []
         # List of lists holding the pts matrix for each subject and each time point
         allPtsList = []
 
-        expDir = os.path.join(outDir, experimentName)
-        if (not os.path.exists(expDir)):
-            os.makedirs(expDir)
-
-        shapeOutDir = os.path.join(expDir, "shapes")
-        if (not os.path.exists(shapeOutDir)):
-            os.makedirs(shapeOutDir)
-
         # Loop over the number of subjects
-        for curSubj in range(0, len(shapePaths)):
+        for subject_index in self.subject_indices:
+            current_time = self.time_points[subject_index]
+            current_points_list = []
+            current_polydata_list = []
 
-            curPaths = shapePaths[curSubj]
-            curT = timepts[curSubj]
-
-            curPtsList = []
-            curPolyList = []
-
-            for t in range(0, len(curT)):
-            
-                polydataT = vtk.vtkPolyData()
-                polydataT.DeepCopy(procrustesFilter.GetOutput().GetBlock(curSubj * len(curT) + t))
-                nPoint = polydataT.GetNumberOfPoints()
+            for t in range(0, len(current_time)):
+                polydata_t = vtk.vtkPolyData()
+                # note: currently assuming all subject had same number of time points
+                polydata_t.DeepCopy(procrustesFilter.GetOutput().GetBlock(subject_index * len(current_time) + t))
+                nPoint = polydata_t.GetNumberOfPoints()
                 pointMatrixT = np.zeros([3, nPoint])
                 
                 for k in range(nPoint):
-                
-                    point = polydataT.GetPoint(k)
+                    point = polydata_t.GetPoint(k)
                     pointMatrixT[0, k] = point[0]
                     pointMatrixT[1, k] = point[1]
                     pointMatrixT[2, k] = point[2]
-                
-                # Add this to the the current poly list
-                curPolyList.append(polydataT)
-                # And add it to the current points list
-                curPtsList.append(pointMatrixT)
-                
+
+                current_polydata_list.append(polydata_t)
+                current_points_list.append(pointMatrixT)
+
                 # Save reference polydata for tris once per subject
                 if (t==0):
-                    referencePolyForTris.append(polydataT)
-                
-                writer = vtk.vtkPolyDataWriter()
-                writer.SetInputData(polydataT)
-                outFilename = '%s/%s' %(shapeOutDir, os.path.basename(curPaths[t]))
-                writer.SetFileName(outFilename)
-                writer.Write()
-            
-            allPolyList.append(curPolyList)
-            allPtsList.append(curPtsList)
+                    referencePolyForTris.append(polydata_t)
+            allPtsList.append(current_points_list)
 
-        ###########################################################
-        # Polynomial regression for individual subjects (level 1) #
-        ###########################################################
+        # subject level longitudinal model
+        self.p0_list = []
+        self.v_list = []
+        self.subject_model_order = subject_model_order
+        self.population_model_order = population_model_order
+        # todo: multiprocessing subject-wise trajectory computation
+        for subject_index in self.subject_indices:
 
-        # Holds the subject wise intercepts
-        p0_list= []
-        # Holds the subject wise slopes
-        v_list = []
-        # Order of polynomial regression
-        polynomial_order = 1
-
-        # Loop over the number of subjects
-        for curSubj in range(0, len(allPtsList)):
-
-            curT = timepts[curSubj]
-            cur_pts_list = allPtsList[curSubj]
-            
+            current_time = self.time_points[subject_index]
+            current_points_list = allPtsList[subject_index]
             kendall_shape_list = []
 
-            for t in range(0, len(curT)):
+            for t in range(0, len(current_time)):
                 
-                cur_pts = cur_pts_list[t]
+                cur_pts = current_points_list[t]
                 [dim, num_pts] = cur_pts.shape
-                
                 kendall_shape_t = manifolds.kendall3D(num_pts)
                 kendall_shape_t.SetPoint(copy.deepcopy(cur_pts))
-                        
                 kendall_shape_list.append(kendall_shape_t)
-                
-            p0_i, v_i = LinearizedGeodesicPolynomialRegression_Kendall3D(np.array(curT), kendall_shape_list, order=polynomial_order, useFrechetMeanAnchor=False)
-            
-            p0_list.append(p0_i)
-            v_list.append(v_i)
 
-        # Make the output directory
-        
-        parameterDir = os.path.join(expDir, "model_parameters")
+            p0_i, v_i = LinearizedGeodesicPolynomialRegression_Kendall3D(np.array(current_time),
+                                                                         kendall_shape_list,
+                                                                         order=subject_model_order,
+                                                                         useFrechetMeanAnchor=False)
+            self.p0_list.append(p0_i)
+            self.v_list.append(v_i)
 
-        if (not os.path.exists(parameterDir)):
-            os.makedirs(parameterDir)
+        # mean trajectory
+        self.mean_p0 = FrechetMean_Kendall3D(self.p0_list)
+        num_slopes = len(self.v_list[0])
+        [dim, num_pts] = self.mean_p0.GetPoint().shape
+        self.mean_v = []
+        for i in range(num_slopes):
+            self.mean_v.append(manifolds.kendall3D_tVec(num_pts))
+        for subject_index in self.subject_indices:
+            for i in range(num_slopes):
+                self.mean_v[i].tVector += self.p0_list[i].ParallelTranslateAtoB(self.p0_list[i], self.mean_p0, self.v_list[subject_index][i]).tVector
+        for i in range(num_slopes):
+            self.mean_v[i] = self.mean_v[i].ScalarMultiply(1/len(self.subject_indices))
 
-        # Save the regression parameters
-        out_p0_list = "%s/%s_p0_list" %(parameterDir, experimentName)
-        out_v_list = "%s/%s_v_list" %(parameterDir, experimentName)
+        # population level covariates model
+        if len(selected_covariates_indices) != 0:
+            selected_covariates = []
+            self.minimum_covariates = []
+            self.maximum_covariates = []
+            for subject_index in self.subject_indices:
+                current_subject_covartiates = []
+                for covariates_index in selected_covariates_indices:
+                    current_subject_covartiates.append(
+                        self.covariates[subject_index][covariates_time_index][covariates_index])
+                # record max/min covariates value
+                if subject_index == 0:
+                    self.minimum_covariates = current_subject_covartiates.copy()
+                    self.maximum_covariates = current_subject_covartiates.copy()
+                else:
+                    for i in range(len(current_subject_covartiates)):
+                        if current_subject_covartiates[i] < self.minimum_covariates[i]:
+                            self.minimum_covariates[i] = current_subject_covartiates[i]
+                        if current_subject_covartiates[i] > self.maximum_covariates[i]:
+                            self.maximum_covariates[i] = current_subject_covartiates[i]
+                selected_covariates.append(current_subject_covartiates)
 
-        self.pickleParameter(p0_list, out_p0_list)
-        self.pickleParameter(v_list, out_v_list)
+            self.population_p0, self.population_v, covariates_intercepts = MultivariateLinearizedGeodesicPolynomialRegression_Intercept_Kendall3D(
+                selected_covariates, self.p0_list, order=1)
+            self.tangent_slope_arr, covariates_slopes = MultivariateLinearizedGeodesicPolynomialRegression_Slope_Kendall3D(
+                selected_covariates, self.v_list, self.population_p0, self.p0_list, self.population_v,
+                covariates_intercepts, level2_order=population_model_order)
+        else:
+            self.population_p0 = None
+            self.population_v = None
+            self.tangent_slope_arr = None
+            logging.info("No covariate is selected to compute hierarchical geodesic model")
 
-        population_p0, population_v, covariates_intercepts = MultivariateLinearizedGeodesicPolynomialRegression_Intercept_Kendall3D(covariates, p0_list, order=1)
+        # visualization
+        slicer.app.processEvents()
+        self.visualization_grid_layout = grid_layout
+        self.selected_covariates_indices = selected_covariates_indices
+        self.selected_covariates_names = selected_covariates_names
 
-        tangent_slope_arr, covariates_slopes = MultivariateLinearizedGeodesicPolynomialRegression_Slope_Kendall3D(
-         covariates, v_list, population_p0, p0_list, population_v, covariates_intercepts, level2_order=1)
-        
-        # Save the group parameters
-        out_population_p0 = "%s/%s_population_p0" %(parameterDir, experimentName)
-        out_population_v = "%s/%s_population_v" %(parameterDir, experimentName)
-        out_tangent_slope_arr = "%s/%s_tangent_slope_arr" %(parameterDir, experimentName)
-        out_covariates_slopes = "%s/%s_covariates_slopes" %(parameterDir, experimentName)        
+        visualize_model.addItem("Mean")
 
-        self.pickleParameter(population_p0, out_population_p0)
-        self.pickleParameter(population_v, out_population_v)
-        self.pickleParameter(tangent_slope_arr, out_tangent_slope_arr)
-        self.pickleParameter(covariates_slopes, out_covariates_slopes)
+        if len(selected_covariates_indices) != 0:
+            visualize_model.addItem("HGM")
 
-        # For now, let's save the subject specific trajectories so there is something to visualize 
-        regressionOutDir = os.path.join(expDir, "subject_level_regression")
-        if (not os.path.exists(regressionOutDir)):
-            os.makedirs(regressionOutDir)
+        # todo: extension removal
+        self.subject_ids = []
+        if subject_id_type.currentText == 'Prefix':
+            for subject_filenames in self.filenames:
+                if id_length > len(subject_filenames[0]):
+                    self.subject_ids.append(subject_filenames[0])
+                else:
+                    self.subject_ids.append(subject_filenames[0][:id_length])
+                visualize_model.addItem(self.subject_ids[-1])
+        elif subject_id_type.currentText == 'Suffix':
+            for subject_filenames in self.filenames:
+                if id_length > len(subject_filenames[0]):
+                    self.subject_ids.append(subject_filenames[0])
+                else:
+                    self.subject_ids.append(subject_filenames[0][(len(subject_filenames[0]) - id_length):])
+                visualize_model.addItem(self.subject_ids[-1])
+        elif subject_id_type.currentText == 'Index':
+            for subject_index in self.subject_indices:
+                self.subject_ids.append("subject " + str(subject_index))
+                visualize_model.addItem(self.subject_ids[-1])
+        else:
+            logging.error('Wrong subject id type.')
+        visualize_model.currentIndexChanged.connect(self.visualizationSubjectChanged)
 
-        # Read a vtk file for reference polydata (they all have the same connectivity)
-        reader = vtk.vtkPolyDataReader()
-        reader.SetFileName(shapePaths[0][0])
-        reader.Update()
-        referencePolydata = reader.GetOutput()
+        # mean shape
+        label = qt.QLabel()
+        label.setText("time")
+        label.setAlignment(qt.Qt.AlignCenter)
+        self.visualization_labels.append(label)
+        self.visualization_grid_layout.addWidget(label, 1, 0)
 
-        for i in range(0, len(subjIDs)):
+        slider = ctk.ctkSliderWidget()
+        slider.minimum = self.minimum_time_point
+        slider.maximum = self.maximum_time_point
+        slider.value = self.minimum_time_point
+        # todo: step size based on input time scale
+        slider.decimals = 2
+        slider.singleStep = 0.01
+        slider.pageStep = 0.2
+        self.visualization_sliders.append(slider)
+        self.visualization_grid_layout.addWidget(slider, 1, 1)
+        slider.valueChanged.connect(self.visualizationSliderChanged)
 
-            # Output a regression sequence for each subject
-            curRegOutDir = os.path.join(regressionOutDir, subjIDs[i])
-            
-            if (not os.path.exists(curRegOutDir)):
-                os.makedirs(curRegOutDir)
+        # visualization node
+        self.visualization_index = 0
 
-            cur_t = timepts[i]
+        # mean shape
+        mean_polydata = vtk.vtkPolyData()
+        mean_polydata.DeepCopy(referencePolyForTris[0])
+        pts_mat = self.mean_p0.GetPoint()
+        [dim, num_pts] = pts_mat.shape
 
-            estimated_time_discretization = np.linspace(np.min(cur_t), np.max(cur_t), 50)
-            
-            # Slopes of a polynomial model
-            slopes = v_list[i]
-            intercept = p0_list[i]
+        vtk_points_t = vtk.vtkPoints()
+        for n in range(0, num_pts):
+            vtk_points_t.InsertNextPoint(pts_mat[0, n], pts_mat[1, n], pts_mat[2, n])
+        mean_polydata.SetPoints(vtk_points_t)
+        self.polydatas.append(mean_polydata)
 
-            curPolydata = vtk.vtkPolyData()
-            curPolydata.DeepCopy(referencePolydata)
+        mean_shape_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode", "mean shape")
+        mean_shape_node.CreateDefaultDisplayNodes()
+        mean_shape_node.SetAndObservePolyData(mean_polydata)
+        self.visualization_nodes.append(mean_shape_node)
 
-            for t in range(0, len(estimated_time_discretization)):
-  
-                t_t = estimated_time_discretization[t]
-                
-                # The overall slope
-                overall_slope = np.zeros(slopes[0].tVector.shape)
-                for s in range(len(slopes)):
-                    overall_slope += slopes[s].ScalarMultiply(t_t**(s+1)).tVector
-                
-                # Create a tangent vector object starting from the intercept
-                v_tangent = manifolds.kendall3D_tVec(intercept.nPt)
-                # Set the tangent vector to our overall slope
-                v_tangent.SetTangentVector(overall_slope)
+        # HGM shape
+        if len(selected_covariates_indices) != 0:
+            hgm_polydata = vtk.vtkPolyData()
+            hgm_polydata.DeepCopy(referencePolyForTris[0])
+            pts_mat = self.population_p0.GetPoint()
+            [dim, num_pts] = pts_mat.shape
 
-                # Shoot along the geodesic
-                pi = intercept.ExponentialMap(v_tangent)
-                
-                pts_mat = pi.GetPoint()
-                [dim, num_pts] = pts_mat.shape
-                
-                vtk_points_t = vtk.vtkPoints()
-                
-                for n in range(0, num_pts):
-                
-                    vtk_points_t.InsertNextPoint(pts_mat[0,n], pts_mat[1,n], pts_mat[2,n])
-                
-                curPolydata.SetPoints(vtk_points_t)
-                
-                writer = vtk.vtkPolyDataWriter()
-                writer.SetInputData(curPolydata)
-                reg_out_filename = '%s/%s_regression_%0.2d.vtk' %(curRegOutDir, subjIDs[i], t)
-                writer.SetFileName(reg_out_filename)
-                writer.Write()
- 
+            vtk_points_t = vtk.vtkPoints()
+            for n in range(0, num_pts):
+                vtk_points_t.InsertNextPoint(pts_mat[0, n], pts_mat[1, n], pts_mat[2, n])
+            hgm_polydata.SetPoints(vtk_points_t)
+            self.polydatas.append(hgm_polydata)
 
-        # Let's summarize the HGM with a json file
-        experiment_dict = {
-            "experiment_name": experimentName,
-            "shape_directory": shapeOutDir,
-            "model_parameter_directory": parameterDir
-        }
+            hgm_shape_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode", "hgm shape")
+            hgm_shape_node.CreateDefaultDisplayNodes()
+            hgm_shape_node.SetAndObservePolyData(hgm_polydata)
+            hgm_shape_node.GetDisplayNode().SetVisibility(0)
+            self.visualization_nodes.append(hgm_shape_node)
 
-        experiment_json_out = '%s/%s.json' %(expDir, experimentName)
+        # subject shapes
+        for i in range(len(referencePolyForTris)):
+            subject_i_polydata = vtk.vtkPolyData()
+            subject_i_polydata.DeepCopy(referencePolyForTris[i])
+            self.polydatas.append(subject_i_polydata)
 
-        with open(experiment_json_out, "w") as jsonof:
-            json.dump(experiment_dict, jsonof)
-
-        # # Let's try showing a chart of the ages
-        # num_subjects = len(shapePaths)
-        # all_tables = []
-        
-        # for i in range(0, num_subjects):
-
-        #     curTable = vtk.vtkTable()
-            
-        #     curT = timepts[curSubj]
-
-        #     num_samples = len(curT)
-
-        #     xAxisVTK = vtk.vtkIntArray()
-        #     xAxisVTK.SetName("Age")
-        #     curTable.AddColumn(xAxisVTK)
-        #     yAxisVTK = vtk.vtkIntArray()
-        #     yAxisVTK.SetName("Subject index")
-        #     curTable.AddColumn(yAxisVTK)
-
-        #     curTable.SetNumberOfRows(num_samples)
-
-        #     for j in range(0, num_samples):
-        #         curTable.SetValue(i, 0, curT[j])
-        #         curTable.SetValue(i, 1, i)
+            subject_i_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode", self.subject_ids[i])
+            subject_i_node.CreateDefaultDisplayNodes()
+            subject_i_node.SetAndObservePolyData(subject_i_polydata)
+            subject_i_node.GetDisplayNode().SetVisibility(0)
+            self.visualization_nodes.append(subject_i_node)
 
         stopTime = time.time()
         logging.info(f'Processing completed in {stopTime-startTime:.2f} seconds')
+
+        slicer.util.resetThreeDViews()
+        return True
+
+    def visualizationSliderChanged(self):
+        if self.visualization_index == 1 and self.population_p0 is not None:
+            # hgm
+            population_p0 = self.population_p0
+            population_v = self.population_v
+            tangent_slope_arr = self.tangent_slope_arr
+            polydata = self.polydatas[self.visualization_index]
+            nManifoldDim = population_p0.nPt
+
+            population_v_final = manifolds.kendall3D_tVec(nManifoldDim)
+            population_tVector_final = np.zeros(population_v_final.tVector.shape)
+            for i in range(len(self.selected_covariates_names)):
+                population_tVector_final += population_v[i].ScalarMultiply(self.visualization_sliders[i+1].value).tVector
+            population_v_final.SetTangentVector(population_tVector_final)
+            population_p0_final = population_p0.ExponentialMap(population_v_final)
+
+            vo_beta0 = manifolds.kendall3D_tVec(nManifoldDim)
+            v0_list = []
+            for o in range(self.population_model_order):
+                tangent_slope_arr_final = np.zeros(population_v_final.tVector.shape)
+                tangent_slope_arr_final += tangent_slope_arr[o][-1].tVector
+                for i in range(len(self.selected_covariates_names)):
+                    tangent_slope_arr_final += tangent_slope_arr[o][i].ScalarMultiply(self.visualization_sliders[i+1].value).tVector
+                vo_beta0.SetTangentVector(tangent_slope_arr_final)
+                v0_list.append(population_p0.ParallelTranslateToA(population_p0_final, vo_beta0))
+
+            tVec = np.zeros(population_v_final.tVector.shape)
+            for o in range(self.population_model_order):
+                tVec += v0_list[o].ScalarMultiply(self.visualization_sliders[0].value**(o+1)).tVector
+            v0_normal = manifolds.kendall3D_tVec(nManifoldDim)
+            v0_normal.SetTangentVector(tVec)
+            p_i = population_p0_final.ExponentialMap(v0_normal)
+
+            pts_mat = p_i.GetPoint()
+            [dim, num_pts] = pts_mat.shape
+
+            vtk_points_t = vtk.vtkPoints()
+            for n in range(0, num_pts):
+                vtk_points_t.InsertNextPoint(pts_mat[0, n], pts_mat[1, n], pts_mat[2, n])
+            polydata.SetPoints(vtk_points_t)
+        else:
+            # mean or subject i
+            if self.visualization_index == 0:
+                slopes = self.mean_v
+                intercept = self.mean_p0
+            else:
+                if self.population_p0 is not None:
+                    slopes = self.v_list[self.visualization_index - 2]
+                    intercept = self.p0_list[self.visualization_index - 2]
+                    logging.info(self.visualization_index - 2)
+                else:
+                    slopes = self.v_list[self.visualization_index - 1]
+                    intercept = self.p0_list[self.visualization_index - 1]
+                    logging.info(self.visualization_index - 1)
+            polydata = self.polydatas[self.visualization_index]
+
+            # The overall slope
+            overall_slope = np.zeros(slopes[0].tVector.shape)
+            t = self.visualization_sliders[0].value
+            for s in range(len(slopes)):
+                overall_slope += slopes[s].ScalarMultiply(t**(s+1)).tVector
+
+            # Create a tangent vector object starting from the intercept
+            v_tangent = manifolds.kendall3D_tVec(intercept.nPt)
+            # Set the tangent vector to our overall slope
+            v_tangent.SetTangentVector(overall_slope)
+
+            # Shoot along the geodesic
+            pi = intercept.ExponentialMap(v_tangent)
+
+            pts_mat = pi.GetPoint()
+            [dim, num_pts] = pts_mat.shape
+
+            vtk_points_t = vtk.vtkPoints()
+            for n in range(0, num_pts):
+                vtk_points_t.InsertNextPoint(pts_mat[0, n], pts_mat[1, n], pts_mat[2, n])
+            polydata.SetPoints(vtk_points_t)
+
+    def visualizationSubjectChanged(self, index):
+
+        # module sliders update
+        for label in self.visualization_labels:
+            self.visualization_grid_layout.removeWidget(label)
+            label.deleteLater()
+        self.visualization_labels = []
+        for slider in self.visualization_sliders:
+            self.visualization_grid_layout.removeWidget(slider)
+            slider.deleteLater()
+        self.visualization_sliders = []
+
+        # visualization node visibility
+        for node in self.visualization_nodes:
+            node.GetDisplayNode().SetVisibility(0)
+        self.visualization_nodes[index].GetDisplayNode().SetVisibility(1)
+
+        label = qt.QLabel()
+        label.setText("Time")
+        label.setAlignment(qt.Qt.AlignCenter)
+        self.visualization_labels.append(label)
+        self.visualization_grid_layout.addWidget(label, 1, 0)
+
+        slider = ctk.ctkSliderWidget()
+        slider.minimum = self.minimum_time_point
+        slider.maximum = self.maximum_time_point
+        slider.value = self.minimum_time_point
+        slider.decimals = 2
+        slider.singleStep = 0.01
+        slider.pageStep = 0.2
+        self.visualization_sliders.append(slider)
+        self.visualization_grid_layout.addWidget(slider, 1, 1)
+        slider.valueChanged.connect(self.visualizationSliderChanged)
+
+        if index == 1 and self.population_p0 is not None:
+            for i in range(len(self.selected_covariates_names)):
+                # Create the variance ratio label
+                label = qt.QLabel()
+                label.setText(self.selected_covariates_names[i])
+                label.setAlignment(qt.Qt.AlignCenter)
+                self.visualization_labels.append(label)
+                self.visualization_grid_layout.addWidget(label, i + 2, 0)
+
+                # Create the slider
+                slider = ctk.ctkSliderWidget()
+                # todo: step size based on covariate range
+                slider.minimum = self.minimum_covariates[i]
+                slider.maximum = self.maximum_covariates[i]
+                slider.value = self.minimum_covariates[i]
+                slider.decimals = 2
+                slider.singleStep = 0.01
+                slider.pageStep = 0.2
+                self.visualization_sliders.append(slider)
+                self.visualization_grid_layout.addWidget(slider, i + 2, 1)
+
+                # Connect
+                slider.valueChanged.connect(self.visualizationSliderChanged)
+
+        self.visualization_index = index
+        self.visualizationSliderChanged()
+
+    def export(self, output_directory, experiment_name):
+
+        experiment_directory = os.path.join(output_directory, experiment_name)
+        if not os.path.exists(experiment_directory):
+            os.makedirs(experiment_directory)
+
+        # reference polydatas
+        out_polydata = "%s/%s_polydata.vtk" % (experiment_directory, experiment_name)
+        writer = vtk.vtkPolyDataWriter()
+        writer.SetInputData(self.polydatas[0])
+        writer.SetFileName(out_polydata)
+        writer.Write()
+
+        # subject model parameters
+        out_p0_list = "%s/%s_p0_list" % (experiment_directory, experiment_name)
+        out_v_list = "%s/%s_v_list" % (experiment_directory, experiment_name)
+        self.pickleParameter(self.p0_list, out_p0_list)
+        self.pickleParameter(self.v_list, out_v_list)
+
+        # mean shape parameters
+        out_mean_p0 = "%s/%s_mean_p0" % (experiment_directory, experiment_name)
+        out_mean_v = "%s/%s_mean_v" % (experiment_directory, experiment_name)
+        self.pickleParameter(self.mean_p0, out_mean_p0)
+        self.pickleParameter(self.mean_v, out_mean_v)
+
+        # HGM parameters
+        if self.population_p0 is not None:
+            out_population_p0 = "%s/%s_population_p0" % (experiment_directory, experiment_name)
+            out_population_v = "%s/%s_population_v" % (experiment_directory, experiment_name)
+            out_tangent_slope_arr = "%s/%s_tangent_slope_arr" % (experiment_directory, experiment_name)
+
+            self.pickleParameter(self.population_p0, out_population_p0)
+            self.pickleParameter(self.population_v, out_population_v)
+            self.pickleParameter(self.tangent_slope_arr, out_tangent_slope_arr)
+
+        # summarize information all with a json file
+        experiment_dict = {
+            "experiment_name": experiment_name,
+            "include_HGM": self.population_p0 is not None,
+            "subject_ids": self.subject_ids,
+            "minimum_time_point": self.minimum_time_point,
+            "maximum_time_point": self.maximum_time_point,
+            "selected_covariate_names": self.selected_covariates_names,
+            "minimum_covariates": self.minimum_covariates,
+            "maximum_covariates": self.maximum_covariates,
+            "subject_model_order": self.subject_model_order,
+            "population_model_order": self.population_model_order
+        }
+        experiment_json_out = '%s/%s.json' % (experiment_directory, experiment_name)
+        with open(experiment_json_out, "w") as jsonof:
+            json.dump(experiment_dict, jsonof)
+
+    def loadExistingModel(self, experiment_json, grid_layout, visualize_model):
+        with open(experiment_json, "r") as jsonof:
+            data = json.load(jsonof)
+            experiment_name = data["experiment_name"]
+            include_HGM = data["include_HGM"]
+            self.subject_ids = data["subject_ids"]
+            self.minimum_time_point = data["minimum_time_point"]
+            self.maximum_time_point = data["maximum_time_point"]
+            self.selected_covariates_names = data["selected_covariate_names"]
+            self.minimum_covariates = data["minimum_covariates"]
+            self.maximum_covariates = data["maximum_covariates"]
+            self.subject_model_order = data["subject_model_order"]
+            self.population_model_order = data["population_model_order"]
+
+            experiment_directory = os.path.dirname(experiment_json)
+
+            # reference polydatas
+            in_polydata = "%s/%s_polydata.vtk" % (experiment_directory, experiment_name)
+            reader = vtk.vtkPolyDataReader()
+            reader.SetFileName(in_polydata)
+            reader.Update()
+            reference_polydata = reader.GetOutput()
+
+            # subject model parameters
+            in_p0_list = "%s/%s_p0_list" % (experiment_directory, experiment_name)
+            in_v_list = "%s/%s_v_list" % (experiment_directory, experiment_name)
+            self.p0_list = self.pickleLoad(in_p0_list)
+            self.v_list = self.pickleLoad(in_v_list)
+
+            # mean shape parameters
+            in_mean_p0 = "%s/%s_mean_p0" % (experiment_directory, experiment_name)
+            in_mean_v = "%s/%s_mean_v" % (experiment_directory, experiment_name)
+            self.mean_p0 = self.pickleLoad(in_mean_p0)
+            self.mean_v = self.pickleLoad(in_mean_v)
+
+            # HGM parameters
+            if include_HGM is True:
+                in_population_p0 = "%s/%s_population_p0" % (experiment_directory, experiment_name)
+                in_population_v = "%s/%s_population_v" % (experiment_directory, experiment_name)
+                in_tangent_slope_arr = "%s/%s_tangent_slope_arr" % (experiment_directory, experiment_name)
+                self.population_p0 = self.pickleLoad(in_population_p0)
+                self.population_v = self.pickleLoad(in_population_v)
+                self.tangent_slope_arr = self.pickleLoad(in_tangent_slope_arr)
+
+            # visualization
+            # visualize model combobox
+            visualize_model.clear()
+            visualize_model.addItem("Mean")
+            if include_HGM:
+                visualize_model.addItem("HGM")
+            for subject_id in self.subject_ids:
+                visualize_model.addItem(subject_id)
+            visualize_model.currentIndexChanged.connect(self.visualizationSubjectChanged)
+
+            # module slider
+            self.visualization_grid_layout = grid_layout
+            for label in self.visualization_labels:
+                self.visualization_grid_layout.removeWidget(label)
+                label.deleteLater()
+            self.visualization_labels = []
+            for slider in self.visualization_sliders:
+                self.visualization_grid_layout.removeWidget(slider)
+                slider.deleteLater()
+            self.visualization_sliders = []
+
+            # mean shape
+            label = qt.QLabel()
+            label.setText("time")
+            label.setAlignment(qt.Qt.AlignCenter)
+            self.visualization_labels.append(label)
+            self.visualization_grid_layout.addWidget(label, 1, 0)
+
+            slider = ctk.ctkSliderWidget()
+            slider.minimum = self.minimum_time_point
+            slider.maximum = self.maximum_time_point
+            slider.value = self.minimum_time_point
+            # todo: step size based on input time scale
+            slider.decimals = 2
+            slider.singleStep = 0.01
+            slider.pageStep = 0.2
+            self.visualization_sliders.append(slider)
+            self.visualization_grid_layout.addWidget(slider, 1, 1)
+            slider.valueChanged.connect(self.visualizationSliderChanged)
+
+            # visualization node
+            self.visualization_index = 0
+
+            # mean shape
+            mean_polydata = vtk.vtkPolyData()
+            mean_polydata.DeepCopy(reference_polydata)
+            pts_mat = self.mean_p0.GetPoint()
+            [dim, num_pts] = pts_mat.shape
+
+            vtk_points_t = vtk.vtkPoints()
+            for n in range(0, num_pts):
+                vtk_points_t.InsertNextPoint(pts_mat[0, n], pts_mat[1, n], pts_mat[2, n])
+            mean_polydata.SetPoints(vtk_points_t)
+            self.polydatas.append(mean_polydata)
+
+            mean_shape_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode", "mean shape")
+            mean_shape_node.CreateDefaultDisplayNodes()
+            mean_shape_node.SetAndObservePolyData(mean_polydata)
+            self.visualization_nodes.append(mean_shape_node)
+
+            # HGM shape
+            if include_HGM:
+                hgm_polydata = vtk.vtkPolyData()
+                hgm_polydata.DeepCopy(reference_polydata)
+                pts_mat = self.population_p0.GetPoint()
+                [dim, num_pts] = pts_mat.shape
+
+                vtk_points_t = vtk.vtkPoints()
+                for n in range(0, num_pts):
+                    vtk_points_t.InsertNextPoint(pts_mat[0, n], pts_mat[1, n], pts_mat[2, n])
+                hgm_polydata.SetPoints(vtk_points_t)
+                self.polydatas.append(hgm_polydata)
+
+                hgm_shape_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode", "hgm shape")
+                hgm_shape_node.CreateDefaultDisplayNodes()
+                hgm_shape_node.SetAndObservePolyData(hgm_polydata)
+                hgm_shape_node.GetDisplayNode().SetVisibility(0)
+                self.visualization_nodes.append(hgm_shape_node)
+
+            # subject shapes
+            for i in range(len(self.subject_ids)):
+                subject_i_polydata = vtk.vtkPolyData()
+                subject_i_polydata.DeepCopy(reference_polydata)
+                self.polydatas.append(subject_i_polydata)
+
+                subject_i_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode", self.subject_ids[i])
+                subject_i_node.CreateDefaultDisplayNodes()
+                subject_i_node.SetAndObservePolyData(subject_i_polydata)
+                subject_i_node.GetDisplayNode().SetVisibility(0)
+                self.visualization_nodes.append(subject_i_node)
+
+            slicer.util.resetThreeDViews()
 
 
 #
