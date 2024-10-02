@@ -4,7 +4,7 @@
 HierarchicalGeodesicModeling is a 3D Slicer module is for computation and visualization/analysis of longtiudinal shape 
 models using geodesic based shape modeling methodology. It is part of the newly added functionalities in [SlicerSALT 5.0.0 release](https://salt.slicer.org/).
 
-![](HGM_Screenshot.png)
+<img src="https://raw.githubusercontent.com/KitwareMedical/HierarchicalGeodesicModeling/refs/heads/main/HGM_Screenshot.png" width="80%">
 
 This module implements a hierarchical geodesic modeling method based on our [IPMI paper](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC10323213/).
 It allows user to perform longitudinal analysis on anatomies of interest in shape space, which is a core aspect of many medical applications for understanding the relationship between an anatomical subject’s functions and its trajectory of shape change over time.
@@ -44,6 +44,8 @@ Given a set of correspondence established shapes of subjects, this module comput
 
 
 6. Load existing model: the saved computation results can be reloaded to the module by selecting the exported ".json" file and clicking the `Load model` button. 
+
+A simple example dataset is can be downloaded [here](https://raw.githubusercontent.com/KitwareMedical/HierarchicalGeodesicModeling/refs/heads/main/HGM_example.zip), which is a sphere being deformed into an ellipse with sampled shapes at three time points without covariate information.
 
 ### Additional notes
 - Shape modeling is performed in shape space (the pre-space of Kendall space). All input shapes' scale and rotation will be removed by partial procrustes alignment as part of preprocessing. And all the result shapes have size "1" (squared sum of point coordinates).
