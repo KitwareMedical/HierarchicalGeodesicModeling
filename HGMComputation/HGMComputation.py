@@ -516,7 +516,7 @@ class HGMComputationLogic(ScriptedLoadableModuleLogic):
             self.mean_v.append(manifolds.kendall3D_tVec(num_pts))
         for subject_index in self.subject_indices:
             for i in range(num_slopes):
-                self.mean_v[i].tVector += self.p0_list[i].ParallelTranslateAtoB(self.p0_list[i], self.mean_p0, self.v_list[subject_index][i]).tVector
+                self.mean_v[i].tVector += self.p0_list[subject_index].ParallelTranslateAtoB(self.p0_list[subject_index], self.mean_p0, self.v_list[subject_index][i]).tVector
         for i in range(num_slopes):
             self.mean_v[i] = self.mean_v[i].ScalarMultiply(1/len(self.subject_indices))
 
