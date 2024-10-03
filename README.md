@@ -4,7 +4,7 @@
 HierarchicalGeodesicModeling is a 3D Slicer module is for computation and visualization/analysis of longtiudinal shape 
 models using geodesic based shape modeling methodology. It is part of the newly added functionalities in [SlicerSALT 5.0.0 release](https://salt.slicer.org/).
 
-<img src="https://raw.githubusercontent.com/KitwareMedical/HierarchicalGeodesicModeling/refs/heads/main/HGM_Screenshot.png" width="80%">
+![Applying HGM module to the longitudinal analysis of shape change in L1L2 intervertebral disc w.r.t. patient reported initial VAS.](/HGM_Screenshot.png)
 
 This module implements a hierarchical geodesic modeling method based on our [IPMI paper](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC10323213/).
 It allows user to perform longitudinal analysis on anatomies of interest in shape space, which is a core aspect of many medical applications for understanding the relationship between an anatomical subject’s functions and its trajectory of shape change over time.
@@ -17,10 +17,10 @@ Given a set of correspondence established shapes of subjects, this module comput
 ## How to use
 1. Two inputs are required for using this module:
    - An input `directory` that contains all the shape files in ".vtk" format.
-   - A `demographcs(.csv)` file that has the information for each shape file including `filenames`, `subject index`, `time variables` and `covariates`.
+   - A `demographics(.csv)` file that has the information for each shape file including `filenames`, `subject index`, `time variables` and `covariates`.
    
 
-2. After setting the inputs, click `Load data` to load the `demographcs(.csv)` into the module. The first three columns of `demographcs(.csv)` should be `filename`, `subject index` and `time variable`. The rest columns are `covariates` which can be clinical assessments or other functional values associated with the input shapes.
+2. After setting the inputs, click `Load data` to load the `demographics(.csv)` into the module. The first three columns of `demographics(.csv)` should be `filename`, `subject index` and `time variable`. The rest columns are `covariates` which can be clinical assessments or other functional values associated with the input shapes.
 
 
 3. The loaded data will populate the module table and the option/parameter entries. The options/parameters are briefly described below:
@@ -50,7 +50,7 @@ A simple example dataset is can be downloaded [here](https://raw.githubuserconte
 ### Additional notes
 - Shape modeling is performed in shape space (the pre-space of Kendall space). All input shapes' scale and rotation will be removed by partial procrustes alignment as part of preprocessing. And all the result shapes have size "1" (squared sum of point coordinates).
 - The input shapes should be correspondence established both within and across individual subjects. All `.vtk` files should have the same number of points, and each point corresponds to the point of the same index in the other input shapes. Correspondence between meshes of different topologies can be established by using existing mesh-to-mesh registration tools in [SlicerSALT](https://salt.slicer.org/).
-- `subject index` in the input `demographcs(.csv)` file should start from 0.
+- `subject index` in the input `demographics(.csv)` file should start from 0.
 - The time variables can be different across individual subjects (e.g. T_subject0 = [0, 1, 2] and T_subject1 = [0.1, 1.2, 2.3]).
 But each input subject should contain the same number of time points as the others.
 
