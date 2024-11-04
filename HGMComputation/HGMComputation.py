@@ -132,14 +132,23 @@ class HGMComputationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.spinBox_populationModelDegree.setRange(1, 1)  # todo: higher order for population level model
         self.ui.pushButton_compute.setDisabled(True)
 
-        # self.ui.groupBox_visualization.setDisabled(True)
-
         self.ui.groupBox_export.setDisabled(True)
+        self.ui.spinBox_SPV.setMinimum(2)
+        self.ui.spinBox_SPV.setMaximum(101)
+        self.ui.pushButton_hgmSPVAdd.setEnabled(False)
+        self.ui.pushButton_hgmSPVRemove.setEnabled(False)
+        self.ui.pushButton_hgmSPVClear.setEnabled(False)
+        self.ui.tableWidget_hgmSPV.setEnabled(False)
 
         # Connections
         self.ui.pushButton_loadData.connect('clicked()', self.onLoadData)
         self.ui.pushButton_compute.connect('clicked()', self.onCompute)
         self.ui.pushButton_export.connect('clicked()', self.onExport)
+        self.ui.pushButton_exportSPV.connect('clicked()', self.onExportSPV)
+        self.ui.checkBox_hgmSPV.connect('stateChanged(int)', self.onHgmSPVChanged)
+        self.ui.pushButton_hgmSPVAdd.connect('clicked()', self.onAddHGM)
+        self.ui.pushButton_hgmSPVRemove.connect('clicked()', self.onRemoveHGM)
+        self.ui.pushButton_hgmSPVClear.connect('clicked()', self.onClearHGM)
         self.ui.pushButton_loadModel.connect('clicked()', self.onLoadExistingModel)
 
     def cleanup(self) -> None:
@@ -173,7 +182,8 @@ class HGMComputationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def onLoadData(self):
         input_directory = self.ui.DirectoryButton_inputDirectory.directory
         demographics_path = self.ui.PathLineEdit_demographics.currentPath
-        if self.logic.readCSVFile(input_directory, demographics_path, self.ui.tableWidget_inputShapes):
+        max_covariates_time_index = self.logic.readCSVFile(input_directory, demographics_path, self.ui.tableWidget_inputShapes)
+        if max_covariates_time_index != 0:
             table_widget = self.ui.tableWidget_inputShapes
             self.ui.comboBox_filenames.addItem(table_widget.horizontalHeaderItem(0).text())
             self.ui.comboBox_subjectIndex.addItem(table_widget.horizontalHeaderItem(1).text())
@@ -182,7 +192,10 @@ class HGMComputationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.ui.listWidget_covariatesSelection.clear()
             for i in range(3, self.ui.tableWidget_inputShapes.columnCount):
                 self.ui.listWidget_covariatesSelection.addItem(table_widget.horizontalHeaderItem(i).text())
+            self.ui.spinBox_covariatesTimeIndex.setRange(0, max_covariates_time_index)
             self.ui.pushButton_compute.setDisabled(False)
+        else:
+            return  # todo: pop window for failing to load file.
 
     def onCompute(self) -> None:
         """
@@ -200,9 +213,44 @@ class HGMComputationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 self.ui.groupBox_visualization.setEnabled(True)
                 self.ui.groupBox_export.setEnabled(True)
 
+                self.ui.tableWidget_hgmSPV.setColumnCount(len(selected_covariates_names))
+                self.ui.tableWidget_hgmSPV.setHorizontalHeaderLabels(selected_covariates_names)
+                horizontal_header = self.ui.tableWidget_hgmSPV.horizontalHeader()
+                horizontal_header.setStretchLastSection(True)
+                self.ui.tableWidget_hgmSPV.setSelectionBehavior(qt.QAbstractItemView.SelectRows)
+                self.ui.tableWidget_hgmSPV.setSelectionMode(qt.QAbstractItemView.SingleSelection)
 
     def onExport(self):
         self.logic.export(self.ui.DirectoryButton_export.directory, self.ui.lineEdit_experimentName.text)
+
+    def onExportSPV(self):
+        self.logic.exportSPV(self.ui.DirectoryButton_export.directory,
+                             self.ui.lineEdit_experimentName.text,
+                             self.ui.spinBox_SPV.value,
+                             self.ui.checkBox_meanSPV.isChecked(),
+                             self.ui.checkBox_subjectSPV.isChecked(),
+                             self.ui.checkBox_hgmSPV.isChecked(),
+                             self.ui.tableWidget_hgmSPV)
+    def onHgmSPVChanged(self):
+        if self.ui.checkBox_hgmSPV.isChecked() is True:
+            self.ui.pushButton_hgmSPVAdd.setEnabled(True)
+            self.ui.pushButton_hgmSPVRemove.setEnabled(True)
+            self.ui.pushButton_hgmSPVClear.setEnabled(True)
+            self.ui.tableWidget_hgmSPV.setEnabled(True)
+        else:
+            self.ui.pushButton_hgmSPVAdd.setEnabled(False)
+            self.ui.pushButton_hgmSPVRemove.setEnabled(False)
+            self.ui.pushButton_hgmSPVClear.setEnabled(False)
+            self.ui.tableWidget_hgmSPV.setEnabled(False)
+
+    def onAddHGM(self):
+        self.logic.addHGM(self.ui.tableWidget_hgmSPV)
+
+    def onRemoveHGM(self):
+        self.logic.removeHGM(self.ui.tableWidget_hgmSPV)
+
+    def onClearHGM(self):
+        self.logic.clearHGM(self.ui.tableWidget_hgmSPV)
 
     def onLoadExistingModel(self):
         self.logic.loadExistingModel(self.ui.PathLineEdit_existingModel.currentPath,
@@ -328,7 +376,7 @@ class HGMComputationLogic(ScriptedLoadableModuleLogic):
                 row_file_path = os.path.join(input_directory, row[0])
                 if not os.path.exists(row_file_path):
                     logging.error("File path does not exist: " + row_file_path)
-                    return False
+                    return 0
 
                 row_time_point = float(row[2])
                 if self.minimum_time_point is None or self.maximum_time_point is None:
@@ -407,7 +455,7 @@ class HGMComputationLogic(ScriptedLoadableModuleLogic):
                     table_widget.setCellWidget(i - 1, j, labelCovariate)
 
         table_widget.resizeColumnsToContents()
-        return True
+        return len(self.filenames[0])
 
     def compute(self, selected_covariates_indices, selected_covariates_names, ui):
         """
@@ -854,6 +902,176 @@ class HGMComputationLogic(ScriptedLoadableModuleLogic):
         experiment_json_out = '%s/%s.json' % (experiment_directory, experiment_name)
         with open(experiment_json_out, "w") as jsonof:
             json.dump(experiment_dict, jsonof)
+
+    def exportSPV(self, output_directory, experiment_name, spinbox_spv, mean_spv, subject_spv, hgm_spv, hgm_table):
+        experiment_directory = os.path.join(output_directory, experiment_name)
+        if not os.path.exists(experiment_directory):
+            os.makedirs(experiment_directory)
+
+        time_interval = (self.maximum_time_point - self.minimum_time_point) / (spinbox_spv - 1)
+        csv_list = []
+
+        csv_header = []
+        for step in range(spinbox_spv):
+            csv_header.append("time %.2f" % (self.minimum_time_point + time_interval * step))
+        csv_list.append(csv_header)
+
+        if mean_spv is True:
+            csv_list_mean = []
+            slopes = self.mean_v
+            intercept = self.mean_p0
+            for step in range(spinbox_spv):
+                time_point = self.minimum_time_point + time_interval * step
+                mean_polydata = vtk.vtkPolyData()
+                mean_polydata.DeepCopy(self.polydatas[0])
+
+                overall_slope = np.zeros(slopes[0].tVector.shape)
+                for s in range(len(slopes)):
+                    overall_slope += slopes[s].ScalarMultiply(time_point ** (s + 1)).tVector
+                v_tangent = manifolds.kendall3D_tVec(intercept.nPt)
+                v_tangent.SetTangentVector(overall_slope)
+                pi = intercept.ExponentialMap(v_tangent)
+                pts_mat = pi.GetPoint()
+                [dim, num_pts] = pts_mat.shape
+                vtk_points_t = vtk.vtkPoints()
+                for n in range(0, num_pts):
+                    vtk_points_t.InsertNextPoint(pts_mat[0, n], pts_mat[1, n], pts_mat[2, n])
+                mean_polydata.SetPoints(vtk_points_t)
+
+                if not os.path.exists("%s/mean/" % experiment_directory):
+                    os.makedirs("%s/mean/" % experiment_directory)
+                out_polydata = "%s/mean/mean_t%.2f.vtk" % (experiment_directory, time_point)
+                writer = vtk.vtkPolyDataWriter()
+                writer.SetInputData(mean_polydata)
+                writer.SetFileName(out_polydata)
+                writer.Write()
+
+                csv_list_mean.append(out_polydata)
+
+            csv_list.append(csv_list_mean)
+
+        if subject_spv is True:
+
+            for i in range(len(self.subject_ids)):
+                slopes = self.v_list[i]
+                intercept = self.p0_list[i]
+                csv_list_subject = []
+
+                for step in range(spinbox_spv):
+                    time_point = self.minimum_time_point + time_interval * step
+                    subject_polydata = vtk.vtkPolyData()
+                    subject_polydata.DeepCopy(self.polydatas[0])
+
+                    overall_slope = np.zeros(slopes[0].tVector.shape)
+                    for s in range(len(slopes)):
+                        overall_slope += slopes[s].ScalarMultiply(time_point ** (s + 1)).tVector
+                    v_tangent = manifolds.kendall3D_tVec(intercept.nPt)
+                    v_tangent.SetTangentVector(overall_slope)
+                    pi = intercept.ExponentialMap(v_tangent)
+                    pts_mat = pi.GetPoint()
+                    [dim, num_pts] = pts_mat.shape
+                    vtk_points_t = vtk.vtkPoints()
+                    for n in range(0, num_pts):
+                        vtk_points_t.InsertNextPoint(pts_mat[0, n], pts_mat[1, n], pts_mat[2, n])
+                    subject_polydata.SetPoints(vtk_points_t)
+
+                    if not os.path.exists("%s/%s/" % (experiment_directory, self.subject_ids[i])):
+                        os.makedirs("%s/%s/" % (experiment_directory, self.subject_ids[i]))
+                    out_polydata = "%s/%s/%s_t%.2f.vtk" % (experiment_directory, self.subject_ids[i], self.subject_ids[i], time_point)
+                    writer = vtk.vtkPolyDataWriter()
+                    writer.SetInputData(subject_polydata)
+                    writer.SetFileName(out_polydata)
+                    writer.Write()
+
+                    csv_list_subject.append(out_polydata)
+
+                csv_list.append(csv_list_subject)
+
+        if hgm_spv is True:
+
+            population_p0 = self.population_p0
+            population_v = self.population_v
+            tangent_slope_arr = self.tangent_slope_arr
+            nManifoldDim = population_p0.nPt
+
+            for row in range(hgm_table.rowCount):
+                csv_list_hgm = []
+                covariates_list = []
+                for column in range(hgm_table.columnCount):
+                    covariates_list.append(hgm_table.cellWidget(row, column).value)
+
+                population_v_final = manifolds.kendall3D_tVec(nManifoldDim)
+                population_tVector_final = np.zeros(population_v_final.tVector.shape)
+                for i in range(len(self.selected_covariates_names)):
+                    population_tVector_final += population_v[i].ScalarMultiply(covariates_list[i]).tVector
+                population_v_final.SetTangentVector(population_tVector_final)
+                population_p0_final = population_p0.ExponentialMap(population_v_final)
+
+                vo_beta0 = manifolds.kendall3D_tVec(nManifoldDim)
+                v0_list = []
+                for o in range(self.population_model_order):
+                    tangent_slope_arr_final = np.zeros(population_v_final.tVector.shape)
+                    tangent_slope_arr_final += tangent_slope_arr[o][-1].tVector
+                    for i in range(len(self.selected_covariates_names)):
+                        tangent_slope_arr_final += tangent_slope_arr[o][i].ScalarMultiply(covariates_list[i]).tVector
+                    vo_beta0.SetTangentVector(tangent_slope_arr_final)
+                    v0_list.append(population_p0.ParallelTranslateToA(population_p0_final, vo_beta0))
+
+                for step in range(spinbox_spv):
+                    hgm_polydata = vtk.vtkPolyData()
+                    hgm_polydata.DeepCopy(self.polydatas[0])
+                    time_point = self.minimum_time_point + time_interval * step
+                    tVec = np.zeros(population_v_final.tVector.shape)
+                    for o in range(self.population_model_order):
+                        tVec += v0_list[o].ScalarMultiply(time_point ** (o + 1)).tVector
+                    v0_normal = manifolds.kendall3D_tVec(nManifoldDim)
+                    v0_normal.SetTangentVector(tVec)
+                    p_i = population_p0_final.ExponentialMap(v0_normal)
+
+                    pts_mat = p_i.GetPoint()
+                    [dim, num_pts] = pts_mat.shape
+
+                    vtk_points_t = vtk.vtkPoints()
+                    for n in range(0, num_pts):
+                        vtk_points_t.InsertNextPoint(pts_mat[0, n], pts_mat[1, n], pts_mat[2, n])
+                    hgm_polydata.SetPoints(vtk_points_t)
+
+                    covariates_str = ""
+                    for i in range(len(self.selected_covariates_names)):
+                        covariates_str += "_%s%.2f" % (self.selected_covariates_names[i], covariates_list[i])
+
+                    if not os.path.exists("%s/hgm%s/" % (experiment_directory, covariates_str)):
+                        os.makedirs("%s/hgm%s/" % (experiment_directory, covariates_str))
+                    out_polydata = "%s/hgm%s/hgm%s_t%.2f.vtk" % (experiment_directory, covariates_str, covariates_str, time_point)
+                    writer = vtk.vtkPolyDataWriter()
+                    writer.SetInputData(hgm_polydata)
+                    writer.SetFileName(out_polydata)
+                    writer.Write()
+
+                    csv_list_hgm.append(out_polydata)
+
+                csv_list.append(csv_list_hgm)
+
+        csv_path = "%s/%s_SPV.csv" % (experiment_directory, experiment_name)
+        with open(csv_path, "w") as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerows(csv_list)
+
+    def addHGM(self, tablewidget):
+        n_covariates = len(self.selected_covariates_names)
+        tablewidget.insertRow(tablewidget.rowCount)
+        for i in range(n_covariates):
+            spinbox = qt.QDoubleSpinBox()
+            spinbox.setRange(self.minimum_covariates[i], self.maximum_covariates[i])
+            tablewidget.setCellWidget(tablewidget.rowCount - 1, i, spinbox)
+
+    def removeHGM(self, tablewidget):
+        if tablewidget.selectionModel().hasSelection:
+            tablewidget.removeRow(tablewidget.selectionModel().selectedRows()[0].row())
+
+    def clearHGM(self, tablewidget):
+        tablewidget.clearContents()
+        tablewidget.setRowCount(0)
 
     def loadExistingModel(self, experiment_json, grid_layout, visualize_model):
         with open(experiment_json, "r") as jsonof:

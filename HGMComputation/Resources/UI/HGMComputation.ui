@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>418</width>
-    <height>952</height>
+    <height>1173</height>
    </rect>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
@@ -283,28 +283,41 @@
       <string>Export</string>
      </property>
      <layout class="QGridLayout" name="gridLayout">
-      <item row="0" column="0">
+      <item row="0" column="0" colspan="2">
        <widget class="QLabel" name="label_2">
         <property name="text">
          <string>Experiment Name</string>
         </property>
        </widget>
       </item>
-      <item row="0" column="1">
+      <item row="0" column="2">
        <widget class="QLineEdit" name="lineEdit_experimentName">
         <property name="text">
          <string>HGM_experiment</string>
         </property>
        </widget>
       </item>
-      <item row="1" column="0">
+      <item row="1" column="0" colspan="2">
        <widget class="QLabel" name="outputDirectoryLabel">
         <property name="text">
          <string>Output Directory</string>
         </property>
        </widget>
       </item>
-      <item row="1" column="1">
+      <item row="2" column="0" colspan="3">
+       <widget class="QPushButton" name="pushButton_export">
+        <property name="enabled">
+         <bool>true</bool>
+        </property>
+        <property name="toolTip">
+         <string>Run the algorithm.</string>
+        </property>
+        <property name="text">
+         <string>Export Geodesic Models</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="2">
        <widget class="ctkDirectoryButton" name="DirectoryButton_export">
         <property name="sizePolicy">
          <sizepolicy hsizetype="Ignored" vsizetype="Fixed">
@@ -314,17 +327,79 @@
         </property>
        </widget>
       </item>
-      <item row="2" column="0" colspan="2">
-       <widget class="QPushButton" name="pushButton_export">
-        <property name="enabled">
-         <bool>true</bool>
+      <item row="4" column="0" colspan="3">
+       <widget class="QGroupBox" name="groupBox_3">
+        <property name="title">
+         <string>SPV Visualization</string>
         </property>
-        <property name="toolTip">
-         <string>Run the algorithm.</string>
-        </property>
-        <property name="text">
-         <string>Export</string>
-        </property>
+        <layout class="QGridLayout" name="gridLayout_6">
+         <item row="3" column="1" rowspan="5" colspan="3">
+          <widget class="QTableWidget" name="tableWidget_hgmSPV"/>
+         </item>
+         <item row="5" column="0">
+          <widget class="QPushButton" name="pushButton_hgmSPVAdd">
+           <property name="text">
+            <string>Add</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="0">
+          <widget class="QLabel" name="label_16">
+           <property name="text">
+            <string>Total Time Steps</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="2">
+          <widget class="QCheckBox" name="checkBox_meanSPV">
+           <property name="text">
+            <string>Mean</string>
+           </property>
+          </widget>
+         </item>
+         <item row="7" column="0">
+          <widget class="QPushButton" name="pushButton_hgmSPVClear">
+           <property name="text">
+            <string>Clear</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="3">
+          <widget class="QCheckBox" name="checkBox_subjectSPV">
+           <property name="text">
+            <string>Subjects</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QSpinBox" name="spinBox_SPV">
+           <property name="value">
+            <number>11</number>
+           </property>
+          </widget>
+         </item>
+         <item row="6" column="0">
+          <widget class="QPushButton" name="pushButton_hgmSPVRemove">
+           <property name="text">
+            <string>Remove</string>
+           </property>
+          </widget>
+         </item>
+         <item row="8" column="0" colspan="4">
+          <widget class="QPushButton" name="pushButton_exportSPV">
+           <property name="text">
+            <string>Export Trajectories for ShapePopulationViewer</string>
+           </property>
+          </widget>
+         </item>
+         <item row="4" column="0">
+          <widget class="QCheckBox" name="checkBox_hgmSPV">
+           <property name="text">
+            <string>HGM</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
        </widget>
       </item>
      </layout>
