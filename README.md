@@ -45,6 +45,9 @@ Given a set of correspondence established shapes of subjects, this module comput
 
 6. Load existing model: the saved computation results can be reloaded to the module by selecting the exported ".json" file and clicking the `Load model` button. 
 
+
+7. The results can also be exported for visualization in ShapePopulationViewer (SPV) using the 'SPV Visualization' subsection under 'Export'. Users may check `Mean`, `Subjects`, and/or `HGM` to export trajectories of interest to the selected output directory and visualize them in SPV.
+
 A simple example dataset is can be downloaded [here](https://raw.githubusercontent.com/KitwareMedical/HierarchicalGeodesicModeling/refs/heads/main/HGM_example.zip), which is a sphere being deformed into an ellipse with sampled shapes at three time points without covariate information.
 
 ### Additional notes
